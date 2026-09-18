@@ -67,6 +67,18 @@ public:
 };
 
 
+struct WMODoodadSet
+{
+    char name[0x14]; // set name
+    int start; // index of first doodad instance in this set
+    uint32 size; // number of doodad instances in this set
+    int unused; // unused? (always 0)
+};
+
+// Set 0 keeps the original filename for gameobject WMO models.
+std::string WmoDoodadSetName(std::string const& name, uint16 doodadSet);
+uint16 ResolveWmoDoodadSet(std::string const& name, uint16 requested, uint32 instanceId);
+
 class WMORoot
 {
     public:
@@ -80,9 +92,10 @@ class WMORoot
 
         bool open();
         bool ConvertToVMAPRootWmo(FILE* output);
-        Model* GetDoodadModel(unsigned int i)
+        bool IsDoodadInSet(uint32 index, uint16 doodadSet) const;
+        Model* GetDoodadModel(unsigned int i, uint16 doodadSet)
         {
-            if (i >= nModels)
+            if (i >= nModels || !modelis[i] || !IsDoodadInSet(i, doodadSet))
                 return NULL;
             return modelis[i]->model;
         }
@@ -90,6 +103,7 @@ class WMORoot
         std::string filename;
         char outfilename;
         std::vector<std::string> doodadModels;
+        std::vector<WMODoodadSet> doodadSets;
         WMOModelInstance** modelis;
 };
 
@@ -107,14 +121,6 @@ struct WMOLiquidVert
     uint16 unk1;
     uint16 unk2;
     float height;
-};
-
-struct WMODoodadSet
-{
-    char name[0x14]; // set name
-    int start; // index of first doodad instance in this set
-    uint32 size; // number of doodad instances in this set
-    int unused; // unused? (always 0)
 };
 
 class WMOGroup
@@ -152,9 +158,9 @@ class WMOGroup
         ~WMOGroup();
 
         bool open();
-        int ConvertToVMAPGroupWmo(FILE* output, WMORoot* rootWMO, bool pPreciseVectorData);
-        void WriteDoodadsTriangles(FILE* output, int indexShift);
-        void WriteDoodadsVertices(FILE* output);
+        int ConvertToVMAPGroupWmo(FILE* output, WMORoot* rootWMO, bool pPreciseVectorData, uint16 doodadSet);
+        void WriteDoodadsTriangles(FILE* output, int indexShift, uint16 doodadSet);
+        void WriteDoodadsVertices(FILE* output, uint16 doodadSet);
     private:
         std::string filename;
         char outfilename;

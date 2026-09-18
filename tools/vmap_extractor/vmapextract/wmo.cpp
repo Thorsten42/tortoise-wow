@@ -32,7 +32,7 @@
 using namespace std;
 extern uint16* LiqType;
 
-WMORoot::WMORoot(std::string& filename) : filename(filename), modelis(NULL)
+WMORoot::WMORoot(std::string& filename) : nModels(0), filename(filename), modelis(NULL)
 {
 }
 
@@ -127,7 +127,7 @@ bool WMORoot::open()
             {
                 WMODoodadSet dds;
                 f.read(&dds, 32);
-                //doodadsets.push_back(dds);
+                doodadSets.push_back(dds);
                 //printf("|%u %s\n", dds.unused, dds.name);
             }
         }
@@ -142,7 +142,7 @@ bool WMORoot::open()
             // coordinates in WMOs and models also have to be read as (X,Z,-Y) to work in my system. 
             // But then again, the ADT files have the "correct" order of coordinates. Weird.
             nModels = (int)size / 0x28;
-            modelis = new WMOModelInstance*[nModels];
+            modelis = new WMOModelInstance*[nModels]();
             //printf("Loading %u models spawn\n", nModels);
             for (size_t i=0; i<nModels; i++)
             {
@@ -215,10 +215,39 @@ bool WMORoot::ConvertToVMAPRootWmo(FILE* pOutfile)
 
 WMORoot::~WMORoot()
 {
+    for (uint32 i = 0; modelis && i < nModels; ++i)
+    {
+        if (modelis[i])
+        {
+            delete modelis[i]->model;
+            delete modelis[i];
+        }
+    }
+    delete [] modelis;
+}
+
+std::string WmoDoodadSetName(std::string const& name, uint16 doodadSet)
+{
+    if (!doodadSet)
+        return name;
+    return name.substr(0, name.size() - 4) + "_DoodadSet" + std::to_string(doodadSet) + ".wmo";
+}
+
+bool WMORoot::IsDoodadInSet(uint32 index, uint16 doodadSet) const
+{
+    auto contains = [index](WMODoodadSet const& set)
+    {
+        return index >= uint32(set.start) && index - uint32(set.start) < set.size;
+    };
+    // The global set is present alongside the selected set. Testing membership
+    // once per MODR reference also avoids duplicating overlapping set ranges.
+    return !doodadSets.empty() &&
+        (contains(doodadSets[0]) ||
+         (doodadSet < doodadSets.size() && contains(doodadSets[doodadSet])));
 }
 
 WMOGroup::WMOGroup(std::string& filename, WMORoot* _root) : filename(filename),
-    MOPY(0), MOVI(0), MoviEx(0), MOVT(0), MOBA(0), nDoodads(0), MobaEx(0), hlq(0), LiquEx(0), LiquBytes(0), root(_root)
+    MOPY(0), MOVI(0), MoviEx(0), MOVT(0), MOBA(0), nDoodads(0), doodads(0), MobaEx(0), hlq(0), LiquEx(0), LiquBytes(0), root(_root)
 {
 }
 
@@ -327,22 +356,22 @@ bool WMOGroup::open()
     return true;
 }
 
-void WMOGroup::WriteDoodadsVertices(FILE* output)
+void WMOGroup::WriteDoodadsVertices(FILE* output, uint16 doodadSet)
 {
     for (int i = 0; i < nDoodads; ++i)
     {
-        Model* doodadModel = root->GetDoodadModel(doodads[i]);
+        Model* doodadModel = root->GetDoodadModel(doodads[i], doodadSet);
         if (!doodadModel)
             continue;
         fwrite(doodadModel->vertices, sizeof(float) * 3, doodadModel->header.nBoundingVertices, output);
     }
 }
 
-void WMOGroup::WriteDoodadsTriangles(FILE* output, int indexShift)
+void WMOGroup::WriteDoodadsTriangles(FILE* output, int indexShift, uint16 doodadSet)
 {
     for (int i = 0; i < nDoodads; ++i)
     {
-        Model* doodadModel = root->GetDoodadModel(doodads[i]);
+        Model* doodadModel = root->GetDoodadModel(doodads[i], doodadSet);
         if (!doodadModel)
             continue;
         for (uint32 j = 0; j < doodadModel->nIndices; ++j)
@@ -354,7 +383,7 @@ void WMOGroup::WriteDoodadsTriangles(FILE* output, int indexShift)
     }
 }
 
-int WMOGroup::ConvertToVMAPGroupWmo(FILE* output, WMORoot* rootWMO, bool pPreciseVectorData)
+int WMOGroup::ConvertToVMAPGroupWmo(FILE* output, WMORoot* rootWMO, bool pPreciseVectorData, uint16 doodadSet)
 {
     fwrite(&mogpFlags, sizeof(uint32), 1, output);
     fwrite(&groupWMOID, sizeof(uint32), 1, output);
@@ -368,12 +397,12 @@ int WMOGroup::ConvertToVMAPGroupWmo(FILE* output, WMORoot* rootWMO, bool pPrecis
     fwrite(&liquflags, sizeof(uint32), 1, output);
 
     // Handle doodads spawn on WMO
-    // TODO: Filter used doodads depending on WMO configuration.
+    // Use identical set filtering for counts, indices and vertices in both modes.
     int doodadsVerticesCount = 0;
     int doodadsTriangleIndicesCount = 0;
     for (int i = 0; i < nDoodads; ++i)
     {
-        Model* doodadModel = root->GetDoodadModel(doodads[i]);
+        Model* doodadModel = root->GetDoodadModel(doodads[i], doodadSet);
         if (!doodadModel)
             continue;
         doodadsVerticesCount += doodadModel->header.nBoundingVertices;
@@ -427,7 +456,7 @@ int WMOGroup::ConvertToVMAPGroupWmo(FILE* output, WMORoot* rootWMO, bool pPrecis
             }
         }
         if (doodadsTriangleIndicesCount > 0)
-            WriteDoodadsTriangles(output, nVertices);
+            WriteDoodadsTriangles(output, nVertices, doodadSet);
 
         if (fwrite("VERT", 4, 1, output) != 1)
         {
@@ -455,7 +484,7 @@ int WMOGroup::ConvertToVMAPGroupWmo(FILE* output, WMORoot* rootWMO, bool pPrecis
             }
         }
         if (doodadsVerticesCount > 0)
-            WriteDoodadsVertices(output);
+            WriteDoodadsVertices(output, doodadSet);
 
         nColTriangles = nTriangles + doodadsTriangleIndicesCount/3;
     }
@@ -519,7 +548,7 @@ int WMOGroup::ConvertToVMAPGroupWmo(FILE* output, WMORoot* rootWMO, bool pPrecis
         int INDX[] = {0x58444E49, (nColTriangles + doodadsTriangleIndicesCount/3)* 6 + 4, (nColTriangles + doodadsTriangleIndicesCount/3)* 3};
         fwrite(INDX, 4, 3, output);
         fwrite(MoviEx, 2, nColTriangles * 3, output);
-        WriteDoodadsTriangles(output, nColVertices);
+        WriteDoodadsTriangles(output, nColVertices, doodadSet);
 
         // write vertices
         int VERT[] = {0x54524556, int((nColVertices + doodadsVerticesCount) * 3 * sizeof(float) + 4), nColVertices + doodadsVerticesCount}; // "VERT"
@@ -527,7 +556,7 @@ int WMOGroup::ConvertToVMAPGroupWmo(FILE* output, WMORoot* rootWMO, bool pPrecis
         for (uint32 i = 0; i < nVertices; ++i)
             if (IndexRenum[i] >= 0)
                 fwrite(MOVT + 3 * i, sizeof(float), 3, output);
-        WriteDoodadsVertices(output);
+        WriteDoodadsVertices(output, doodadSet);
 
         delete [] MoviEx;
         delete [] IndexRenum;
@@ -623,6 +652,7 @@ WMOGroup::~WMOGroup()
     delete hlq;
     delete [] LiquEx;
     delete [] LiquBytes;
+    delete [] doodads;
 }
 
 WMOInstance::WMOInstance(MPQFile& f, const char* WmoInstName, uint32 mapID, uint32 tileX, uint32 tileY, FILE* pDirfile)
@@ -639,7 +669,13 @@ WMOInstance::WMOInstance(MPQFile& f, const char* WmoInstName, uint32 mapID, uint
     pos2 = Vec3D(ff[0], ff[1], ff[2]);
     f.read(ff, 12);
     pos3 = Vec3D(ff[0], ff[1], ff[2]);
-    f.read(&d2, 4);
+    uint16 instanceFlags, selectedDoodadSet;
+    f.read(&instanceFlags, 2);
+    f.read(&selectedDoodadSet, 2);
+    selectedDoodadSet = ResolveWmoDoodadSet(WmoInstName, selectedDoodadSet, id);
+    // Keep placement-specific decoration in the filename; the assembler and
+    // runtime already cache/load collision by model name, without a format change.
+    std::string modelName = WmoDoodadSetName(WmoInstName, selectedDoodadSet);
 
     uint16 trash, adtId;
     f.read(&adtId, 2);
@@ -648,7 +684,7 @@ WMOInstance::WMOInstance(MPQFile& f, const char* WmoInstName, uint32 mapID, uint
     //-----------add_in _dir_file----------------
 
     char tempname[512];
-    sprintf(tempname, "%s/%s", szWorkDirWmo, WmoInstName);
+    sprintf(tempname, "%s/%s", szWorkDirWmo, modelName.c_str());
     FILE* input;
     input = fopen(tempname, "r+b");
 
@@ -696,9 +732,9 @@ WMOInstance::WMOInstance(MPQFile& f, const char* WmoInstName, uint32 mapID, uint
     fwrite(&scale, sizeof(float), 1, pDirfile);
     fwrite(&pos2, sizeof(float), 3, pDirfile);
     fwrite(&pos3, sizeof(float), 3, pDirfile);
-    uint32 nlen = strlen(WmoInstName);
+    uint32 nlen = modelName.size();
     fwrite(&nlen, sizeof(uint32), 1, pDirfile);
-    fwrite(WmoInstName, sizeof(char), nlen, pDirfile);
+    fwrite(modelName.c_str(), sizeof(char), nlen, pDirfile);
 
     /* fprintf(pDirfile,"%s/%s %f,%f,%f_%f,%f,%f 1.0 %d %d %d,%d %d\n",
         MapName,

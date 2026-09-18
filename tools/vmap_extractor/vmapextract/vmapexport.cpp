@@ -21,6 +21,7 @@
 #include <iostream>
 #include <vector>
 #include <list>
+#include <algorithm>
 #include <errno.h>
 
 #ifdef _WIN32
@@ -197,6 +198,28 @@ void FixZepp(WMOGroup& g)
         ZeppFixVect(g.MOVT + 3 * i);
 }
 
+// Successful exports and their available set count, keyed like the raw files.
+static std::map<std::string, uint32> extractedWmos;
+
+uint16 ResolveWmoDoodadSet(std::string const& name, uint16 requested, uint32 instanceId)
+{
+    std::string key = std::string(szWorkDirWmo) + "/" + name;
+    fixnamen(&key[0], key.size());
+    auto itr = extractedWmos.find(key);
+    if (itr != extractedWmos.end() && requested >= itr->second)
+    {
+        // Some shipped placements select a set absent from the patched WMO.
+        // Retain its base mesh and global furnishings instead of losing the
+        // entire placement by referencing a variant that was never exported.
+        printf("WMO placement %u (%s): doodad set %u out of range (available: %u); using global set 0.\n",
+               instanceId, name.c_str(), unsigned(requested), itr->second);
+        return 0;
+    }
+    // An unknown model or a missing valid variant remains an extraction error;
+    // do not mask it by silently substituting a different furnishing set.
+    return requested;
+}
+
 bool ExtractSingleWmo(std::string& fname)
 {
     // Copy files from archive
@@ -227,7 +250,11 @@ bool ExtractSingleWmo(std::string& fname)
     if (p == 3)
         return true;
 
-    bool file_ok = true;
+    // Cache only successful exports from this run. Files from an older
+    // extractor may contain the union of every doodad set and must be rewritten.
+    if (extractedWmos.count(szLocalFile))
+        return true;
+
     std::cout << "Extracting " << fname << std::endl;
     WMORoot froot(fname);
     if (!froot.open())
@@ -236,26 +263,21 @@ bool ExtractSingleWmo(std::string& fname)
         return true;
     }
 
-	if (FILE* h = fopen(szLocalFile, "rb"))
-	{
-		fclose(h);
-
-        // already exported
-        return true;
-	}
-
-    FILE* output = fopen(szLocalFile, "wb");
-    if (!output)
+    // A WMO with no decorations still needs its base geometry (set 0).
+    uint32 setCount = std::max(uint32(1), froot.nDoodadSets);
+    for (uint32 set = 0; set < setCount; ++set)
     {
-        printf("couldn't open %s for writing!\n", szLocalFile);
-        return false;
-    }
+        std::string outputName = WmoDoodadSetName(szLocalFile, uint16(set));
+        FILE* output = fopen(outputName.c_str(), "wb");
+        if (!output)
+        {
+            printf("couldn't open %s for writing!\n", outputName.c_str());
+            return false;
+        }
 
-    froot.ConvertToVMAPRootWmo(output);
-    int Wmo_nVertices = 0;
-    //printf("root has %d groups\n", froot->nGroups);
-    if (froot.nGroups != 0)
-    {
+        bool file_ok = true;
+        froot.ConvertToVMAPRootWmo(output);
+        int Wmo_nVertices = 0;
         for (uint32 i = 0; i < froot.nGroups; ++i)
         {
             char temp[1024];
@@ -263,8 +285,6 @@ bool ExtractSingleWmo(std::string& fname)
             temp[fname.length() - 4] = 0;
             char groupFileName[1024];
             sprintf(groupFileName, "%s_%03d.wmo", temp, i);
-            //printf("Trying to open groupfile %s\n",groupFileName);
-
             string s = groupFileName;
             WMOGroup fgroup(s, &froot);
             if (!fgroup.open())
@@ -277,17 +297,22 @@ bool ExtractSingleWmo(std::string& fname)
             if (strcmp(szLocalFile, "./Buildings/Transport_Zeppelin.wmo") == 0)
                 FixZepp(fgroup);
 
-            Wmo_nVertices += fgroup.ConvertToVMAPGroupWmo(output, &froot, preciseVectorData);
+            Wmo_nVertices += fgroup.ConvertToVMAPGroupWmo(output, &froot, preciseVectorData, uint16(set));
+        }
+
+        if (fseek(output, 8, SEEK_SET) != 0 ||
+            fwrite(&Wmo_nVertices, sizeof(int), 1, output) != 1 || ferror(output))
+            file_ok = false;
+        if (fclose(output) != 0)
+            file_ok = false;
+
+        if (!file_ok)
+        {
+            remove(outputName.c_str());
+            return false;
         }
     }
-
-    fseek(output, 8, SEEK_SET); // store the correct no of vertices
-    fwrite(&Wmo_nVertices, sizeof(int), 1, output);
-    fclose(output);
-
-    // Delete the extracted file in the case of an error
-    if (!file_ok)
-        remove(szLocalFile);
+    extractedWmos.emplace(szLocalFile, setCount);
     return true;
 }
 
