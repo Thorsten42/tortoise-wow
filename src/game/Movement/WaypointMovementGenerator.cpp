@@ -215,7 +215,7 @@ void WaypointMovementGenerator<Creature>::StartMove(Creature &creature)
 
     WaypointNode const& nextNode = currPoint->second;
     Movement::MoveSplineInit init(creature, "WaypointMovementGenerator<Creature>::StartMove");
-    init.MoveTo(nextNode.x, nextNode.y, nextNode.z, (m_PathOrigin == PATH_FROM_SPECIAL) ? MOVE_STRAIGHT_PATH : MOVE_PATHFINDING);
+    init.MoveTo(nextNode.x, nextNode.y, nextNode.z, (m_PathOrigin == PATH_FROM_SPECIAL || nextNode.straight_path) ? MOVE_STRAIGHT_PATH : MOVE_PATHFINDING);
 
     if (nextNode.orientation != 100 && nextNode.delay != 0)
         init.SetFacing(nextNode.orientation);
@@ -544,17 +544,50 @@ void PatrolMovementGenerator::StartMove(Creature& creature)
 
     creature.AddUnitState(UNIT_STAT_ROAMING_MOVE);
 
-    PathInfo p(&creature);
-    p.calculate(x, y, z, true);
-    if (p.Length() < 0.2f)
-        return;
+    // Formation members must use the same straight segment as their leader.
+    // Otherwise a short navmesh gap can send a member around a building while
+    // the leader crosses it directly.
+    bool straightPath = false;
+    if (leader->GetMotionMaster()->GetCurrentMovementGeneratorType() == WAYPOINT_MOTION_TYPE)
+    {
+        auto const* waypoint = static_cast<WaypointMovementGenerator<Creature> const*>(leader->GetMotionMaster()->GetCurrent());
+        WaypointPathOrigin origin;
+        waypoint->GetPathInformation(origin);
+        CreatureGroup const* group = creature.GetCreatureGroup();
+        if (group)
+        {
+            WaypointPath const* path = sWaypointMgr.GetPathFromOrigin(leader->GetEntry(), group->GetOriginalLeaderGuid().GetCounter(), 0, origin);
+            if (path)
+            {
+                auto const node = path->find(waypoint->GetCurrentNode());
+                straightPath = node != path->end() && node->second.straight_path;
+            }
+        }
+    }
+
+    Movement::MoveSplineInit init(creature, "PatrolMovementGenerator::StartMove");
+    float distance;
+    if (straightPath)
+    {
+        distance = creature.GetDistance(x, y, z);
+        if (distance < 0.2f)
+            return;
+        init.MoveTo(x, y, z, MOVE_STRAIGHT_PATH);
+    }
+    else
+    {
+        PathInfo p(&creature);
+        p.calculate(x, y, z, true);
+        distance = p.Length();
+        if (distance < 0.2f)
+            return;
+        init.Move(&p);
+    }
 
     // Increased speed if late, decreased if in a rotating ...
-    float speed = p.Length() / float(leaderTimeBeforeNextWP) * 1000.0f;
+    float speed = distance / float(leaderTimeBeforeNextWP) * 1000.0f;
     if (speed > creature.GetSpeed(MOVE_RUN) * 1.3f)
         speed = creature.GetSpeed(MOVE_RUN) * 1.3f;
-    Movement::MoveSplineInit init(creature, "PatrolMovementGenerator::StartMove");
-    init.Move(&p);
     init.SetWalk(creature.IsWalking() && !creature.IsLevitating());
     init.SetVelocity(speed);
     init.SetFacing(angle);

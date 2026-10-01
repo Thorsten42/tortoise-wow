@@ -67,8 +67,8 @@ void WaypointManager::Load()
 
         delete result;
 
-        //                                    0     1        2             3             4             5           6                  7            8
-        result = WorldDatabase.Query("SELECT `id`, `point`, `position_x`, `position_y`, `position_z`, `waittime`, `wander_distance`, `script_id`, `orientation` FROM `creature_movement`");
+        //                                    0     1        2             3             4             5           6                  7            8              9
+        result = WorldDatabase.Query("SELECT `id`, `point`, `position_x`, `position_y`, `position_z`, `waittime`, `wander_distance`, `script_id`, `orientation`, `straight_path` FROM `creature_movement`");
 
 
         // error after load, we check if creature guid corresponding to the path id has proper MovementType
@@ -118,6 +118,7 @@ void WaypointManager::Load()
             node.delay          = fields[5].GetUInt32();
             node.wander_distance = fields[6].GetFloat();
             node.script_id      = fields[7].GetUInt32();
+            node.straight_path  = fields[9].GetUInt8() != 0;
 
             // prevent using invalid coordinates
             if (!MaNGOS::IsValidMapCoord(node.x, node.y, node.z, node.orientation == 100.0f ? 0.0f : node.orientation))
@@ -278,7 +279,7 @@ void WaypointManager::Load()
 
         delete result;
 
-        //                                    0     1        2             3             4             5           6                  7            8
+        //                                    0     1        2             3             4             5           6                  7            8              9
         result = WorldDatabase.Query("SELECT `id`, `point`, `position_x`, `position_y`, `position_z`, `waittime`, `wander_distance`, `script_id`, `orientation` FROM `creature_movement_special`");
 
         do
